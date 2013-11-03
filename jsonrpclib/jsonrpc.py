@@ -60,6 +60,8 @@ import random
 import jsonrpclib
 from jsonrpclib import config
 from jsonrpclib import history
+import pdb;#gwj
+import socket as socks
 
 # JSON library importing
 cjson = None
@@ -110,23 +112,6 @@ def jloads(json_string):
 class ProtocolError(Exception):
     pass
 
-class TransportMixIn(object):
-    """ Just extends the XMLRPC transport where necessary. """
-    user_agent = config.user_agent
-    # for Python 2.7 support
-    _connection = None
-
-    def send_content(self, connection, request_body):
-        connection.putheader("Content-Type", "application/json-rpc")
-        connection.putheader("Content-Length", str(len(request_body)))
-        connection.endheaders()
-        if request_body:
-            connection.send(request_body)
-
-    def getparser(self):
-        target = JSONTarget()
-        return JSONParser(target), target
-
 class JSONParser(object):
     def __init__(self, target):
         self.target = target
@@ -147,10 +132,27 @@ class JSONTarget(object):
     def close(self):
         return ''.join(self.data)
 
-class Transport(TransportMixIn, XMLTransport):
-    pass
+#class TransportMixIn(object):
+class Transport(XMLTransport):
+    """ Just extends the XMLRPC transport where necessary. """
+    user_agent = config.user_agent
+    # for Python 2.7 support
+    _connection = None
 
-class SafeTransport(TransportMixIn, XMLSafeTransport):
+    def send_content(self, connection, request_body):
+        connection.putheader("Content-Type", "application/json-rpc")
+        connection.putheader("Content-Length", str(len(request_body)))
+        connection.endheaders()
+        print   (request_body)
+#        if request_body:
+#    self.sock.connect(self.host)
+#    connection.send(request_body)
+
+    def getparser(self):
+        target = JSONTarget()
+        return JSONParser(target), target
+
+class SafeTransport( XMLSafeTransport):
     pass
 from httplib import HTTP, HTTPConnection
 from socket import socket
@@ -163,23 +165,7 @@ try:
 except ImportError:
     pass
     
-if (USE_UNIX_SOCKETS):
-    
-    class UnixHTTPConnection(HTTPConnection):
-        def connect(self):
-            self.sock = socket(AF_UNIX, SOCK_STREAM)
-            self.sock.connect(self.host)
-
-    class UnixHTTP(HTTP):
-        _connection_class = UnixHTTPConnection
-
-    class UnixTransport(TransportMixIn, XMLTransport):
-        def make_connection(self, host):
-            import httplib
-            host, extra_headers, x509 = self.get_host_info(host)
-            return UnixHTTP(host)
-
-    
+   
 class ServerProxy(XMLServerProxy):
     """
     Unfortunately, much more of this class has to be copied since
@@ -217,6 +203,9 @@ class ServerProxy(XMLServerProxy):
         self.__transport = transport
         self.__encoding = encoding
         self.__verbose = verbose
+        print(urllib.splitport(self.__host))
+        self.__sock=socks.create_connection( (urllib.splitport(self.__host)))
+        self.__sock.settimeout(0.1)
 
     def _request(self, methodname, params, rpcid=None):
         request = dumps(params, methodname, encoding=self.__encoding,
@@ -232,8 +221,34 @@ class ServerProxy(XMLServerProxy):
         check_for_errors(response)
         return
 
+    def _recv(self):
+        try:
+            request = self.__sock.recv(18000)
+        except:
+            #timeout, return nothine
+            return dict(result=[]) 
+        print("recv:>> ", request)# gwj
+        #response = loads(request)
+        reqlen = len(request)
+        pos=0
+        while 1:
+            q,u = json.JSONDecoder().raw_decode(request,pos)
+            if u >= reqlen:
+                break
+            pos=u
+        response = q;
+        #response = json.loads(request , encoding='utf-8')
+        return response
+            
     def _run_request(self, request, notify=None):
         history.add_request(request)
+        print("send:>> ", request)#gwj
+        self.__sock.sendall(request)
+        response = self._recv()
+        if not 'result' in response.keys():
+           response = self._recv()
+        return_obj=response
+        return return_obj
 
         response = self.__transport.request(
             self.__host,
@@ -265,7 +280,9 @@ class ServerProxy(XMLServerProxy):
 
 
 class _Method(XML_Method):
-    
+    def __init__(self, send, name):
+        self.__send = send
+        self.__name = name
     def __call__(self, *args, **kwargs):
         if len(args) > 0 and len(kwargs) > 0:
             raise ProtocolError('Cannot use both positional ' +
@@ -522,7 +539,8 @@ def check_for_errors(result):
     if 'jsonrpc' in result.keys() and float(result['jsonrpc']) > 2.0:
         raise NotImplementedError('JSON-RPC version not yet supported.')
     if 'result' not in result.keys() and 'error' not in result.keys():
-        raise ValueError('Response does not have a result or error key.')
+#gwjraise ValueError('Response does not have a result or error key.')
+        result['result'] = [];
     if 'error' in result.keys() and result['error'] != None:
         code = result['error']['code']
         message = result['error']['message']
